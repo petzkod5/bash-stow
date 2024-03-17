@@ -42,6 +42,7 @@ _arg_dry='false'
 _arg_stow_dir='./'
 _arg_stow_target=$(readlink -f "${PWD%/*}")
 
+
 log() {
     if [[ "${_arg_verbose}" == 'true' ]]; then
         echo "$1"
@@ -138,14 +139,16 @@ parse_commandline(){
                 ;;
             -t|--target)
                 test $# -lt 2 && die "Missing value for '$_key'." 1
-                _arg_stow_target="$(readlink -f "$2")"
+                _arg_stow_target="${2/\~/$HOME}"
                 shift
                 ;;
             --target=*)
-                _arg_stow_target="$(readlink -f "${_key##--target=}")"
+                _arg_stow_target="${1##--target=}"
+                _arg_stow_target="${_arg_stow_target/\~/$HOME}"
                 ;;
             -t*)
-                _arg_stow_target="$(readlink -f "${_key##-t}")"
+                _arg_stow_target="${1##-t}"
+                _arg_stow_target="${_arg_stow_target/\~/$HOME}"
                 ;;
             -h|--help)
                 print_help
@@ -261,34 +264,41 @@ stow(){
 
         if [ -d "${obj}" ]; then
             if directory_empty "${obj}"; then
+                echo "${obj} is a directory and is empty. Omitting.."
                 continue
             fi
 
-            for i in "${obj}"/*; do
-                local _linkdir="$_arg_stow_target/$(basename "$obj")"
-                local _target="$(readlink -f "$i")"
-                local _link="$_linkdir/$(basename "$i")"
+            local _linkdir="$_arg_stow_target/$(basename "${obj}")"
+            if test ! -e "${_linkdir}"; then
+                local _target="${_fp_obj}"
+                link "-s" "$_target" "$_linkdir"
+            else
+                echo "${_linkdir} exists. Linking files from within ${obj}"
+                for i in "${obj}"/*; do
+                    local _target="$(readlink -f "$i")"
+                    local _link="$_linkdir/$(basename "$i")"
 
-                if test ! -d "$_linkdir"; then
-                    if [[ "${_arg_dry}" == 'true' ]]; then
-                        log "mkdir -p $_linkdir"
-                    else
-                        mkdir -p "$_linkdir"
-                    fi
-                fi
-
-                if test -L "$_link"; then
-
-                    if [[ "${_arg_force}" == 'true' ]]; then
-                        link "-snf" "$_target" "$_link"
-                    else
-                        echo "$_link already exists. Use --force to relink"
+                    if test ! -d "$_linkdir"; then
+                        if [[ "${_arg_dry}" == 'true' ]]; then
+                            log "mkdir -p $_linkdir"
+                        else
+                            mkdir -p "$_linkdir"
+                        fi
                     fi
 
-                else
-                    link "-s" "$_target" "$_link"
-                fi
-            done
+                    if test -L "$_link"; then
+
+                        if [[ "${_arg_force}" == 'true' ]]; then
+                            link "-snf" "$_target" "$_link"
+                        else
+                            echo "$_link already exists. Use --force to relink"
+                        fi
+
+                    else
+                        link "-s" "$_target" "$_link"
+                    fi
+                done
+            fi
         else
             local _target="$_fp_obj"
             local _link="$_arg_stow_target/$(basename "$_fp_obj")"
