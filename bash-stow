@@ -73,10 +73,13 @@ print_help() {
     printf '\t%s\n' "--dry: don't perform any actions. Use with verbose"
     printf '\t%s\n' "-t, --target: Where to stow files \
         (default=${_arg_stow_target})"
+    printf '\t-h, --help: show this message and exit\n'
     printf '\n'
     printf 'Commands:\n'
+    printf '\thelp: show this message and exit\n'
     printf '\tstow: Stow all symlinks into %s\n' "$HOME"
     printf '\tunstow: Unstow all stowed symlinks\n'
+    printf '\tlist: list all stowed files'
     printf '\n'
     printf '%s\n' "- Dylan Petzko, 2024"
 }
@@ -101,7 +104,10 @@ parse_commandline_commands(){
         unstow)
             _command='unstow'
             ;;
-        -h|--help)
+        list)
+            _command='list'
+            ;;
+        -h|--help|help)
             print_help
             exit 0
             ;;
@@ -308,6 +314,21 @@ unstow(){
     return 0
 }
 
+list() {
+    if test ! -e "${stowedfile}"; then
+        echo "No stowedfile found. If you haven't stowed anything this is \
+            normal"
+        return 0
+    fi
+
+    local _stowedfiles
+
+    printf '====== Stowed Files ======\n'
+    while IFS= read -r file; do
+        printf '%s\n' "${file}"
+    done < "${stowedfile}"
+}
+
 main() {
     trap trap_error ERR
 
@@ -338,11 +359,21 @@ main() {
 
     [[ "${_arg_verbose}" == 'true' ]] && print_env_state
 
-    if [[ "${_command}" == 'stow' ]]; then
-        stow "${_arg_stow_dir}"
-    elif [[ "${_command}" == 'unstow' ]]; then
-        unstow
-    fi
+
+    case "${_command}" in
+        stow)
+            stow "${_arg_stow_dir}"
+            ;;
+        unstow)
+            unstow
+            ;;
+        list)
+            list
+            ;;
+        *)
+            die "FATAL: Unknown command received ${_command}" 2
+            ;;
+    esac
 
     shopt -u dotglob
     exit 0
