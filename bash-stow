@@ -1,0 +1,339 @@
+#!/bin/bash
+# shellcheck disable=2155
+# vim: syntax=sh cc=80 tw=79 sw=4 sts=4 et sr nu rnu
+
+# Set Script Environment Info
+#readonly ogCWD="$PWD"
+readonly selfParams="$*"
+readonly selfPath="${BASH_SOURCE[0]}"
+selfDir="$(dirname "${selfPath}")"
+selfName="$(basename "${selfPath}")"
+readonly selfDir selfName
+
+# Global declarations
+readonly ignorefilename=".stowignore"
+readonly stowedfile="$HOME/.stowed"
+
+# Enable Environment Variable DEBUG to set traces
+# TIP: $> DEBUG=yes ./bash-stow [OPTIONS] <...>
+if [[ ${DEBUG:-} =~ ^1|yes|true$ ]]; then
+    set -o xtrace
+fi
+
+# Set Shell behavior if we're running as standalone and not sourced
+if ! (return 0 2> /dev/null); then
+    set -o errexit
+    set -o nounset
+    set -o pipefail
+fi
+
+# Enable errtrace
+set -o errtrace
+
+# Command holder
+_command=
+
+# Set argument Defaults
+_positionals=()
+
+_arg_force='false'
+_arg_verbose='false'
+_arg_dry='false'
+_arg_stow_dir='./'
+
+log() {
+    if [[ "${_arg_verbose}" == 'true' ]]; then
+        echo "$1"
+    fi
+}
+
+die() {
+    local _ret="${2:-1}"
+    test "${_PRINT_HELP:-no}" = yes && print_help >&2
+    echo "$1" >&2
+    exit "${_ret}"
+}
+
+begins_with_short_option(){
+    local first_option all_short_options='fvh'
+    first_option="${1:0:1}"
+    test "$all_short_options" = "${all_short_options/$first_option/}" \
+        && return 1 \
+        || return 0
+}
+
+print_help() {
+    printf '%s\n' "Bash only implementation of GNU stow"
+    printf 'Usage: %s [OPTIONS] <stow-directory>\n' "${0}"
+    printf '\t%s\n' "<stow-directory>: the directory to stow. (default=${_arg_stow_dir})"
+    printf '\t%s\n' "-f, --force: Force relinking"
+    printf '\t%s\n' "-v, --verbose: Use verbose logging"
+    printf '\t%s\n' "--dry: don't perform any actions. Use with verbose"
+    printf '\n'
+    printf 'Commands:\n'
+    printf '\tstow: Stow all symlinks into %s\n' "$HOME"
+    printf '\tunstow: Unstow all stowed symlinks\n'
+    printf '\n'
+    printf '%s\n' "- Dylan Petzko, 2024"
+}
+
+print_env_state(){
+    printf '====== ENVIRONMENT STATE ======\n'
+    printf 'VERBOSE:                 %s\n' "${_arg_verbose}"
+    printf 'DRY:                     %s\n' "${_arg_dry}"
+    printf 'FORCE:                   %s\n' "${_arg_force}"
+    printf 'STOW_DIRECTORY:          %s\n' "${_arg_stow_dir}"
+    printf 'IGNORED_FILES:           %s\n' "${ignored_files[*]}"
+    printf '===============================\n'
+}
+
+parse_commandline_commands(){
+    _key="$1"
+    case "$_key" in
+        stow)
+            _command='stow'
+            ;;
+        unstow)
+            _command='unstow'
+            ;;
+        -h|--help)
+            print_help
+            exit 0
+            ;;
+        -h*)
+            print_help
+            exit 0
+            ;;
+        *)
+            _PRINT_HELP=yes die "ERROR: Unknown command $_key" 1
+            ;;
+    esac
+    shift
+}
+
+parse_commandline(){
+    _positionals_count=0
+    while test $# -gt 0; do
+        _key="$1"
+        case "$_key" in
+            -f|--force)
+                _arg_force='true'
+                ;;
+            -v|--verbose)
+                _arg_verbose='true'
+                ;;
+            --dry)
+                _arg_dry='true'
+                ;;
+            -h|--help)
+                print_help
+                exit 0
+                ;;
+            -h*)
+                print_help
+                exit 0
+                ;;
+            *)
+                _last_positional="$1"
+                _positionals+=("$_last_positional")
+                _positionals_count=$((_positionals_count + 1))
+                ;;
+        esac
+        shift
+    done
+}
+
+handle_parsed_args() {
+    test "${_positionals_count}" -le 1 || _PRINT_HELP=yes \
+        die "ERROR: Expected between 0 and 1 positional arguments" 1
+}
+
+assign_positional_args() {
+    local _positional_name _shift_for=$1
+    _positional_names="_arg_stow_dir "
+
+    shift "$_shift_for"
+    for _positional_name in ${_positional_names}; do
+        test $# -gt 0 || break
+        eval "$_positional_name=\${1}" || die "ERROR: Unknown parsing error" 1
+        shift
+    done
+}
+
+trap_error(){
+    local exitCode=1
+
+    # disable the standard error handler so we can reimplement
+    trap - ERR
+
+    # Consider any further errors in execution as non-fatal so we can exit
+    set +o errexit
+    set +o pipefail
+
+    if [[ ${1-} =~ ^[0-9]+$ ]]; then
+        exitCode="$1"
+    fi
+
+    printf '===== Error Termination of Script =====\n'
+    printf 'Script Path:           %s\n' "${selfPath}"
+    printf 'Script Dir:            %s\n' "${selfDir}"
+    printf 'Script Name:           %s\n' "${selfName}"
+    printf 'Script Parameters:     %s\n' "${selfParams}"
+    printf 'Script ExitCode:       %s\n' "${exitCode}"
+    printf '=======================================\n'
+    print_env_state
+
+    exit "${exitCode}"
+}
+
+link(){
+    local _args="$1"
+    local _target="$2"
+    local _link="$3"
+
+    log "ln $_args $_target $_link"
+    if [[ "${_arg_dry}" == 'true' ]]; then
+        return 0
+    fi
+
+    if ! ln "$_args" "$_target" "$_link"; then
+        die "LINKING ERROR: ln $_args $_target $_link"
+    else
+        echo "$_link" >> "$stowedfile"
+    fi
+
+    return 0
+}
+
+directory_empty(){
+    local _directory="$1"
+
+    if [ "$(ls -A "$_directory")" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+stow(){
+    shopt -s dotglob
+    local _directory="${1:-$selfDir}"
+    for obj in "${_directory}"/*; do
+        # shellcheck disable=2076,2086
+        if [[ " ${ignored_files[*]} " =~ " $(basename $obj) " ]]; then
+            continue
+        fi
+
+        local _fp_obj="$(readlink -f "${obj}")"
+
+        if [ -d "${obj}" ]; then
+            if directory_empty "${obj}"; then
+                continue
+            fi
+
+            for i in "${obj}"/*; do
+                local _linkdir="$HOME/$(basename "$obj")"
+                local _target="$(readlink -f "$i")"
+                local _link="$_linkdir/$(basename "$i")"
+
+                if test ! -d "$_linkdir"; then
+                    if [[ "${_arg_dry}" == 'true' ]]; then
+                        log "mkdir -p $_linkdir"
+                    else
+                        mkdir -p "$_linkdir"
+                    fi
+                fi
+
+                if test -L "$_link"; then
+
+                    if [[ "${_arg_force}" == 'true' ]]; then
+                        link "-snf" "$_target" "$_link"
+                    else
+                        echo "$_link already exists. Use --force to relink"
+                    fi
+
+                else
+                    link "-s" "$_target" "$_link"
+                fi
+            done
+        else
+            local _target="$_fp_obj"
+            local _link="$HOME/$(basename "$_fp_obj")"
+            if test -L "$_link"; then
+                if [[ "${_arg_force}" == 'true' ]]; then
+                    link "-snf" "$_target" "$_link"
+                else
+                    echo "$_link already exists. Use --force to relink"
+                fi
+            else
+                link "-s" "$_target" "$_link"
+            fi
+        fi
+    done
+}
+
+unstow(){
+    if [ ! -e "${stowedfile}" ]; then
+        echo "No stowedfile was found, if you haven't stowed anything this is\
+            normal"
+        return 0
+    fi
+
+    local _tmpfile="$(mktemp)"
+    cp "${stowedfile}" "${_tmpfile}" || die "ERROR: Could not copy stowedfile" 1
+
+    while IFS= read -r file; do
+        if [ -e "${file}" ]; then
+            unlink "$file"
+            local _tmpfile="$(mktemp)"
+            sed -i "\~${file}~d" "${stowedfile}"
+        fi
+    done < "${_tmpfile}"
+    return 0
+}
+
+main() {
+    trap trap_error ERR
+
+    parse_commandline_commands "$1"
+    shift
+    parse_commandline "$@"
+    handle_parsed_args
+    assign_positional_args 1 "${_positionals[@]}"
+
+    ignored_files=()
+    if [ -e "$HOME/${ignorefilename}-global" ]; then
+        local _f=()
+        mapfile -t _f < "$HOME/${ignorefilename}-global"
+        ignored_files+=("${_f[@]}")
+    fi
+
+    if [ -e "${selfDir}/${ignorefilename}" ]; then
+        local _f=()
+        mapfile -t _f < "${selfDir}/${ignorefilename}"
+        ignored_files+=("${_f[@]}")
+    fi
+
+    if [ -e "${_arg_stow_dir}/${ignorefilename}" ]; then
+        local _f=()
+        mapfile -t _f < "${_arg_stow_dir}/${ignorefilename}"
+        ignored_files+=("${_f[@]}")
+    fi
+
+    [[ "${_arg_verbose}" == 'true' ]] && print_env_state
+
+    if [[ "${_command}" == 'stow' ]]; then
+        stow "${_arg_stow_dir}"
+    elif [[ "${_command}" == 'unstow' ]]; then
+        unstow
+    fi
+
+    shopt -u dotglob
+    exit 0
+}
+
+# Run main if not sourced
+if ! (return 0 2> /dev/null); then
+    test "$#" -ge 1 || _PRINT_HELP=yes die "ERROR: No command provided" 1
+    main "$@"
+fi
