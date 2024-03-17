@@ -237,6 +237,17 @@ directory_empty(){
     fi
 }
 
+append_ignored_files(){
+    local _file="$1"
+    if test ! -e "${_file}"; then
+        return 0
+    fi
+
+    local _f=()
+    mapfile -t _f < "${_file}"
+    ignored_files+=("${_f[@]}")
+}
+
 stow(){
     shopt -s dotglob
     local _directory="${1:-$selfDir}"
@@ -339,23 +350,10 @@ main() {
     assign_positional_args 1 "${_positionals[@]}"
 
     ignored_files=()
-    if [ -e "$HOME/${ignorefilename}-global" ]; then
-        local _f=()
-        mapfile -t _f < "$HOME/${ignorefilename}-global"
-        ignored_files+=("${_f[@]}")
-    fi
+    append_ignored_files "$HOME/${ignorefilename}-global"
+    append_ignored_files "${selfDir}/${ignorefilename}"
+    append_ignored_files "${_arg_stow_dir}/${ignorefilename}"
 
-    if [ -e "${selfDir}/${ignorefilename}" ]; then
-        local _f=()
-        mapfile -t _f < "${selfDir}/${ignorefilename}"
-        ignored_files+=("${_f[@]}")
-    fi
-
-    if [ -e "${_arg_stow_dir}/${ignorefilename}" ]; then
-        local _f=()
-        mapfile -t _f < "${_arg_stow_dir}/${ignorefilename}"
-        ignored_files+=("${_f[@]}")
-    fi
 
     [[ "${_arg_verbose}" == 'true' ]] && print_env_state
 
