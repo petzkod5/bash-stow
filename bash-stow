@@ -40,6 +40,7 @@ _arg_force='false'
 _arg_verbose='false'
 _arg_dry='false'
 _arg_stow_dir='./'
+_arg_stow_target=$(readlink -f "${PWD%/*}")
 
 log() {
     if [[ "${_arg_verbose}" == 'true' ]]; then
@@ -55,7 +56,7 @@ die() {
 }
 
 begins_with_short_option(){
-    local first_option all_short_options='fvh'
+    local first_option all_short_options='fvth'
     first_option="${1:0:1}"
     test "$all_short_options" = "${all_short_options/$first_option/}" \
         && return 1 \
@@ -64,11 +65,14 @@ begins_with_short_option(){
 
 print_help() {
     printf '%s\n' "Bash only implementation of GNU stow"
-    printf 'Usage: %s [OPTIONS] <stow-directory>\n' "${0}"
-    printf '\t%s\n' "<stow-directory>: the directory to stow. (default=${_arg_stow_dir})"
+    printf 'Usage: %s (COMMAND) [OPTIONS] <stow-directory>\n' "${0}"
+    printf '\t%s\n' "<stow-directory>: the directory to stow. \
+        (default=${_arg_stow_dir})"
     printf '\t%s\n' "-f, --force: Force relinking"
     printf '\t%s\n' "-v, --verbose: Use verbose logging"
     printf '\t%s\n' "--dry: don't perform any actions. Use with verbose"
+    printf '\t%s\n' "-t, --target: Where to stow files \
+        (default=${_arg_stow_target})"
     printf '\n'
     printf 'Commands:\n'
     printf '\tstow: Stow all symlinks into %s\n' "$HOME"
@@ -83,6 +87,7 @@ print_env_state(){
     printf 'DRY:                     %s\n' "${_arg_dry}"
     printf 'FORCE:                   %s\n' "${_arg_force}"
     printf 'STOW_DIRECTORY:          %s\n' "${_arg_stow_dir}"
+    printf 'STOW_TARGET:             %s\n' "${_arg_stow_target}"
     printf 'IGNORED_FILES:           %s\n' "${ignored_files[*]}"
     printf '===============================\n'
 }
@@ -125,6 +130,17 @@ parse_commandline(){
             --dry)
                 _arg_dry='true'
                 ;;
+            -t|--target)
+                test $# -lt 2 && die "Missing value for '$_key'." 1
+                _arg_stow_target="$(readlink -f "$2")"
+                shift
+                ;;
+            --target=*)
+                _arg_stow_target="$(readlink -f "${_key##--target=}")"
+                ;;
+            -t*)
+                _arg_stow_target="$(readlink -f "${_key##-t}")"
+                ;;
             -h|--help)
                 print_help
                 exit 0
@@ -143,7 +159,7 @@ parse_commandline(){
     done
 }
 
-handle_parsed_args() {
+handle_positional_args() {
     test "${_positionals_count}" -le 1 || _PRINT_HELP=yes \
         die "ERROR: Expected between 0 and 1 positional arguments" 1
 }
@@ -232,7 +248,7 @@ stow(){
             fi
 
             for i in "${obj}"/*; do
-                local _linkdir="$HOME/$(basename "$obj")"
+                local _linkdir="$_arg_stow_target/$(basename "$obj")"
                 local _target="$(readlink -f "$i")"
                 local _link="$_linkdir/$(basename "$i")"
 
@@ -258,7 +274,7 @@ stow(){
             done
         else
             local _target="$_fp_obj"
-            local _link="$HOME/$(basename "$_fp_obj")"
+            local _link="$_arg_stow_target/$(basename "$_fp_obj")"
             if test -L "$_link"; then
                 if [[ "${_arg_force}" == 'true' ]]; then
                     link "-snf" "$_target" "$_link"
@@ -298,7 +314,7 @@ main() {
     parse_commandline_commands "$1"
     shift
     parse_commandline "$@"
-    handle_parsed_args
+    handle_positional_args
     assign_positional_args 1 "${_positionals[@]}"
 
     ignored_files=()
